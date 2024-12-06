@@ -1,6 +1,3 @@
-// in build gradle:     implementation("org.jetbrains.kotlin:kotlin-reflect")
-
-
 import kotlin.reflect.KClass
 import kotlin.reflect.full.declaredMemberProperties
 
@@ -8,16 +5,18 @@ interface KeyProvider<T> {
     fun key(obj: T): Any
 }
 
-fun <T : Any, R> compareCollections(
-    expected: Iterable<T>,
-    actual: Iterable<T>,
+
+
+fun <R> compareCollections(
+    expected: Iterable<Any>,
+    actual: Iterable<Any>,
     path: String,
     keyProviders: Map<KClass<*>, KeyProvider<*>>,
     differenceHandler: (String, String) -> R
 ): List<R> {
     val differences = mutableListOf<R>()
 
-    // Determine the type of elements by inspecting the first non-null element in either collection
+    // Determine the type of elements
     val firstNonNull = (expected.firstOrNull() ?: actual.firstOrNull())
     if (firstNonNull == null) {
         // Both collections are empty; they are equal
@@ -25,8 +24,49 @@ fun <T : Any, R> compareCollections(
     }
 
     val elementType = firstNonNull::class
-    val keyProvider = keyProviders[elementType] as? KeyProvider<T>
-        ?: error("No KeyProvider for elements of type $elementType at $path")
+
+    if (elementType == String::class || elementType.javaPrimitiveType != null) {
+        // Handle primitives and strings
+        differences += comparePrimitiveCollections(expected, actual, path, differenceHandler)
+    } else {
+        // Handle objects with KeyProviders
+        val keyProvider = keyProviders[elementType] as? KeyProvider<Any>
+            ?: error("No KeyProvider for elements of type $elementType at $path")
+        differences += compareKeyedCollections(expected, actual, path, keyProvider, differenceHandler)
+    }
+
+    return differences
+}
+
+fun <R> comparePrimitiveCollections(
+    expected: Iterable<Any>,
+    actual: Iterable<Any>,
+    path: String,
+    differenceHandler: (String, String) -> R
+): List<R> {
+    val differences = mutableListOf<R>()
+
+    val missingInActual = expected - actual
+    val missingInExpected = actual - expected
+
+    for (element in missingInActual) {
+        differences += differenceHandler("$path", "Expected element not found: $element")
+    }
+    for (element in missingInExpected) {
+        differences += differenceHandler("$path", "Extra element found: $element")
+    }
+
+    return differences
+}
+
+fun <T : Any, R> compareKeyedCollections(
+    expected: Iterable<T>,
+    actual: Iterable<T>,
+    path: String,
+    keyProvider: KeyProvider<T>,
+    differenceHandler: (String, String) -> R
+): List<R> {
+    val differences = mutableListOf<R>()
 
     val expectedByKey = expected.associateBy(keyProvider::key)
     val actualByKey = actual.associateBy(keyProvider::key)
@@ -42,7 +82,7 @@ fun <T : Any, R> compareCollections(
         } else if (actualItem == null && expectedItem != null) {
             differences += differenceHandler(itemPath, "Item is missing in actual collection, expected $expectedItem")
         } else if (expectedItem != null && actualItem != null) {
-            differences += compareDataClasses(expectedItem, actualItem, itemPath, keyProviders, differenceHandler)
+            differences += compareDataClasses(expectedItem, actualItem, itemPath, emptyMap(), differenceHandler)
         }
     }
 
@@ -105,7 +145,7 @@ fun <R> compareDataClasses(
 
     return differences
 }
-data class Car(val brand: String, val color: String, val engine:Int)
+data class Car(val brand: String, val color: String, val engine:Int, val price: List<Int>)
 data class Address(val city: String, val zip: Int, val size: Double)
 data class Person(val name: String, val age: Int, val address: Address, val carList: List<Car>,val carSet: Set<Car>,val carCollection: Collection<Car>,val carSequence: Sequence<Car>,val carIterable: Iterable<Car>, val carMap:Map<String, Car>)
 class CarKeyProvider : KeyProvider<Car> {
@@ -116,24 +156,24 @@ fun main() {
         "Alice",
         30,
         Address("New York", 10001, 330.2),
-        listOf(Car("Ford", "Blue", 1000), Car("BMW", "Orange", 3000)),
-        listOf(Car("Ford", "Blue", 1000), Car("BMW", "Orange", 3000)).toSet(),
-        listOf(Car("Ford", "Blue", 1000), Car("BMW", "Orange", 3000)),
-        sequenceOf(Car("Ford", "Blue", 1000), Car("BMW", "Orange", 3000)),
-        listOf(Car("Ford", "Blue", 1000), Car("BMW", "Orange", 3000)).asIterable(),
-        listOf(Car("Ford", "Blue", 1000), Car("BMW", "Orange", 3000)).associateBy { it.brand },
+        listOf(Car("Ford", "Blue", 1000, listOf(789)), Car("BMW", "Orange", 3000, listOf(123,345))),
+        listOf(Car("Ford", "Blue", 1000, listOf(789)), Car("BMW", "Orange", 3000, listOf(123,345))).toSet(),
+        listOf(Car("Ford", "Blue", 1000, listOf(789)), Car("BMW", "Orange", 3000, listOf(123,345))),
+        sequenceOf(Car("Ford", "Blue", 1000, listOf(789)), Car("BMW", "Orange", 3000, listOf(123,345))),
+        listOf(Car("Ford", "Blue", 1000, listOf(789)), Car("BMW", "Orange", 3000, listOf(123,345))).asIterable(),
+        listOf(Car("Ford", "Blue", 1000, listOf(789)), Car("BMW", "Orange", 3000, listOf(123,345))).associateBy { it.brand },
     )
 
     val person2 = Person(
         "Alice",
         31,
         Address("New York", 10002, 330.2),
-        listOf(Car("Ford", "Blue", 1100), Car("BMW", "Red", 2750)),
-        listOf(Car("Ford", "Blue", 1100), Car("BMW", "Red", 2750)).toSet(),
-        listOf(Car("Ford", "Blue", 1100), Car("BMW", "Red", 2750)),
-        sequenceOf(Car("Ford", "Blue", 1100), Car("BMW", "Red", 2750)),
-        listOf(Car("Ford", "Blue", 1100), Car("BMW", "Red", 2750)).asIterable(),
-        listOf(Car("Ford", "Blue", 1100), Car("BMW", "Red", 2750)).associateBy { it.brand },
+        listOf(Car("Ford", "Blue", 1100, listOf(999)), Car("BMW", "Red", 2750, listOf(123,345,678))),
+        listOf(Car("Ford", "Blue", 1100, listOf(999)), Car("BMW", "Red", 2750, listOf(123,345,678))).toSet(),
+        listOf(Car("Ford", "Blue", 1100, listOf(999)), Car("BMW", "Red", 2750, listOf(123,345,678))),
+        sequenceOf(Car("Ford", "Blue", 1100, listOf(999)), Car("BMW", "Red", 2750, listOf(123,345,678))),
+        listOf(Car("Ford", "Blue", 1100, listOf(999)), Car("BMW", "Red", 2750, listOf(123,345,678))).asIterable(),
+        listOf(Car("Ford", "Blue", 1100, listOf(999)), Car("BMW", "Red", 2750, listOf(123,345,678))).associateBy { it.brand },
     )
 
     val keyProviders = mapOf(
