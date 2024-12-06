@@ -36,49 +36,49 @@ fun compareDataClasses(
     path: String = "",
     keyProviders: Map<KClass<*>, KeyProvider<*>> = emptyMap()
 ): List<String> {
-    if (obj1 == obj2) return emptyList()
+    val differences = mutableListOf<String>()
 
     if (obj1 == null || obj2 == null) {
-        return listOf("$path: $obj1 != $obj2")
-    }
+        if (obj1 != obj2) {
+            differences += "$path: $obj1 != $obj2"
+        }
+    } else {
+        val clazz1 = obj1::class
+        val clazz2 = obj2::class
 
-    val clazz1 = obj1::class
-    val clazz2 = obj2::class
-
-    if (clazz1 != clazz2) {
-        return listOf("$path: Class mismatch (${clazz1.simpleName} != ${clazz2.simpleName})")
-    }
-
-    if (obj1 is Map<*, *> && obj2 is Map<*, *>) {
-        return compareMaps(obj1, obj2, path)
-    }
-
-    if (obj1 is Iterable<*> && obj2 is Iterable<*>) {
-        val elementType = obj1.firstOrNull()?.let { it::class }
-            ?: error("Cannot determine element type for empty collections at $path")
-        val keyProvider = keyProviders[elementType] as? KeyProvider<Any>
-            ?: error("No KeyProvider for elements of type $elementType at $path")
-        @Suppress("UNCHECKED_CAST")
-        return compareCollections(
-            obj1 as Iterable<Any>,
-            obj2 as Iterable<Any>,
-            keyProvider,
-            path
-        )
-    }
-
-    if (!clazz1.isData) {
-        return listOf("$path: $obj1 != $obj2")
-    }
-
-    val differences = mutableListOf<String>()
-    val properties = clazz1.declaredMemberProperties
-
-    for (property in properties) {
-        val value1 = property.getter.call(obj1)
-        val value2 = property.getter.call(obj2)
-        val newPath = if (path.isEmpty()) property.name else "$path.${property.name}"
-        differences += compareDataClasses(value1, value2, newPath, keyProviders)
+        if (clazz1 != clazz2) {
+            differences += "$path: Class mismatch (${clazz1.simpleName} != ${clazz2.simpleName})"
+        } else if (obj1 is Map<*, *> && obj2 is Map<*, *>) {
+            differences += compareMaps(obj1, obj2, path)
+        } else if (obj1 is Iterable<*> && obj2 is Iterable<*>) {
+            val elementType = obj1.firstOrNull()?.let { it::class }
+            if (elementType != null) {
+                val keyProvider = keyProviders[elementType] as? KeyProvider<Any>
+                if (keyProvider != null) {
+                    @Suppress("UNCHECKED_CAST")
+                    differences += compareCollections(
+                        obj1 as Iterable<Any>,
+                        obj2 as Iterable<Any>,
+                        keyProvider,
+                        path
+                    )
+                } else {
+                    differences += "No KeyProvider for elements of type $elementType at $path"
+                }
+            } else {
+                differences += "Cannot determine element type for empty collections at $path"
+            }
+        } else if (clazz1.isData) {
+            val properties = clazz1.declaredMemberProperties
+            for (property in properties) {
+                val value1 = property.getter.call(obj1)
+                val value2 = property.getter.call(obj2)
+                val newPath = if (path.isEmpty()) property.name else "$path.${property.name}"
+                differences += compareDataClasses(value1, value2, newPath, keyProviders)
+            }
+        } else if (obj1 != obj2) {
+            differences += "$path: $obj1 != $obj2"
+        }
     }
 
     return differences
