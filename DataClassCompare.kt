@@ -8,76 +8,98 @@ interface KeyProvider<T> {
     fun key(obj: T): Any
 }
 
-fun <T> compareCollections(
+fun <T : Any, R> compareCollections(
     expected: Iterable<T>,
     actual: Iterable<T>,
-    keyProvider: KeyProvider<T>,
-    path: String = ""
-): List<String> {
+    path: String,
+    keyProviders: Map<KClass<*>, KeyProvider<*>>,
+    differenceHandler: (String, String) -> R
+): List<R> {
+    val differences = mutableListOf<R>()
+
+    // Determine the type of elements by inspecting the first non-null element in either collection
+    val firstNonNull = (expected.firstOrNull() ?: actual.firstOrNull())
+    if (firstNonNull == null) {
+        // Both collections are empty; they are equal
+        return differences
+    }
+
+    val elementType = firstNonNull::class
+    val keyProvider = keyProviders[elementType] as? KeyProvider<T>
+        ?: error("No KeyProvider for elements of type $elementType at $path")
+
     val expectedByKey = expected.associateBy(keyProvider::key)
     val actualByKey = actual.associateBy(keyProvider::key)
     val allKeys = (expectedByKey.keys + actualByKey.keys).toSet()
-
-    val differences = mutableListOf<String>()
 
     for (key in allKeys) {
         val expectedItem = expectedByKey[key]
         val actualItem = actualByKey[key]
         val itemPath = "$path[$key]"
-        differences += compareDataClasses(expectedItem, actualItem, itemPath)
+
+        if (expectedItem == null && actualItem != null) {
+            differences += differenceHandler(itemPath, "Expected item not found, found $actualItem")
+        } else if (actualItem == null && expectedItem != null) {
+            differences += differenceHandler(itemPath, "Item is missing in actual collection, expected $expectedItem")
+        } else if (expectedItem != null && actualItem != null) {
+            differences += compareDataClasses(expectedItem, actualItem, itemPath, keyProviders, differenceHandler)
+        }
     }
 
     return differences
 }
 
-fun compareDataClasses(
+fun <R> compareDataClasses(
     obj1: Any?,
     obj2: Any?,
     path: String = "",
-    keyProviders: Map<KClass<*>, KeyProvider<*>> = emptyMap()
-): List<String> {
-    val differences = mutableListOf<String>()
+    keyProviders: Map<KClass<*>, KeyProvider<*>>,
+    differenceHandler: (String, String) -> R
+): List<R> {
+    val differences = mutableListOf<R>()
 
     if (obj1 == null || obj2 == null) {
         if (obj1 != obj2) {
-            differences += "$path: $obj1 != $obj2"
+            differences += differenceHandler(path, "$obj1 != $obj2")
         }
     } else {
         val clazz1 = obj1::class
         val clazz2 = obj2::class
 
         if (clazz1 != clazz2) {
-            differences += "$path: Class mismatch (${clazz1.simpleName} != ${clazz2.simpleName})"
+            differences += differenceHandler(path, "Class mismatch (${clazz1.simpleName} != ${clazz2.simpleName})")
         } else if (obj1 is Map<*, *> && obj2 is Map<*, *>) {
-            differences += compareMaps(obj1, obj2, path)
+            // Convert maps to sets of pairs
+            val expectedPairs = obj1.map { Pair(it.key, it.value) }
+            val actualPairs = obj2.map { Pair(it.key, it.value) }
+
+            @Suppress("UNCHECKED_CAST")
+            differences += compareCollections(
+                expectedPairs as List<Pair<Any, Any>>,
+                actualPairs as List<Pair<Any, Any>>,
+                path,
+                keyProviders,
+                differenceHandler
+            )
         } else if (obj1 is Iterable<*> && obj2 is Iterable<*>) {
-            val elementType = obj1.firstOrNull()?.let { it::class }
-            if (elementType != null) {
-                val keyProvider = keyProviders[elementType] as? KeyProvider<Any>
-                if (keyProvider != null) {
-                    @Suppress("UNCHECKED_CAST")
-                    differences += compareCollections(
-                        obj1 as Iterable<Any>,
-                        obj2 as Iterable<Any>,
-                        keyProvider,
-                        path
-                    )
-                } else {
-                    differences += "No KeyProvider for elements of type $elementType at $path"
-                }
-            } else {
-                differences += "Cannot determine element type for empty collections at $path"
-            }
+            @Suppress("UNCHECKED_CAST")
+            differences += compareCollections(
+                obj1 as Iterable<Any>,
+                obj2 as Iterable<Any>,
+                path,
+                keyProviders,
+                differenceHandler
+            )
         } else if (clazz1.isData) {
             val properties = clazz1.declaredMemberProperties
             for (property in properties) {
                 val value1 = property.getter.call(obj1)
                 val value2 = property.getter.call(obj2)
                 val newPath = if (path.isEmpty()) property.name else "$path.${property.name}"
-                differences += compareDataClasses(value1, value2, newPath, keyProviders)
+                differences += compareDataClasses(value1, value2, newPath, keyProviders, differenceHandler)
             }
         } else if (obj1 != obj2) {
-            differences += "$path: $obj1 != $obj2"
+            differences += differenceHandler(path, "$obj1 != $obj2")
         }
     }
 
@@ -114,11 +136,22 @@ fun main() {
         listOf(Car("Ford", "Blue", 1100), Car("BMW", "Red", 2750)).associateBy { it.brand },
     )
 
-    val keyProviders: Map<KClass<*>, CarKeyProvider> = mapOf(
-        Car::class to CarKeyProvider() // Provide a key for comparing Car objects
+    val keyProviders = mapOf(
+        Car::class to object : KeyProvider<Car> {
+            override fun key(obj: Car): Any = obj.brand
+        },
+        Pair::class to object : KeyProvider<Pair<String, Car>> {
+            override fun key(obj: Pair<String, Car>): Any = obj.first
+        }
     )
 
-    val differences = compareDataClasses(person1, person2, keyProviders = keyProviders)
+
+    val differences = compareDataClasses(
+        person1,
+        person2,
+        keyProviders = keyProviders,
+        differenceHandler = { path, message -> "$path $message" }
+    )
     if (differences.isEmpty()) {
         println("The objects are identical.")
     } else {
@@ -126,7 +159,7 @@ fun main() {
         differences.forEach { println(it) }
     }
 }
-fun compareMaps(
+/*fun compareMaps(
     expected: Map<*, *>,
     actual: Map<*, *>,
     path: String = ""
@@ -150,6 +183,6 @@ fun compareMaps(
     }
 
     return differences
-}
+}*/
 
 // elements present in one and not the other
